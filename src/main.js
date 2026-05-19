@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 /* =====================================================================
    AUDIO TUNNEL — v4 · EL SER
@@ -49,8 +50,8 @@ if (controls) {
     fileControl.className = "file-control";
     fileControl.setAttribute("for", "audio-upload");
     fileControl.innerHTML = `
-      <span class="file-label">Choose audio</span>
-      <span id="file-name" class="file-name">No track selected</span>
+      <span class="file-label">Seleccionar audio</span>
+      <span id="file-name" class="file-name">Ninguna pista seleccionada</span>
     `;
     audioUpload = document.createElement("input");
     audioUpload.id = "audio-upload";
@@ -64,7 +65,7 @@ if (controls) {
     playButton = document.createElement("button");
     playButton.id = "play-button";
     playButton.disabled = true;
-    playButton.textContent = "Play";
+    playButton.textContent = "Reproducir";
     controls.appendChild(playButton);
   }
   if (!seekSlider || !currentTimeLabel || !durationLabel) {
@@ -81,7 +82,7 @@ if (controls) {
     const volumeControl = document.createElement("div");
     volumeControl.className = "volume-control";
     volumeControl.innerHTML = `
-      <span>Vol</span>
+      <span>Volumen</span>
       <input id="volume-slider" type="range" min="0" max="100" value="100" />
     `;
     controls.appendChild(volumeControl);
@@ -299,7 +300,7 @@ if (audioUpload) {
     if (currentTimeLabel) currentTimeLabel.textContent = "0:00";
     if (durationLabel) durationLabel.textContent = "0:00";
     playButton.disabled = false;
-    playButton.textContent = "Play";
+    playButton.textContent = "Reproducir";
   });
 }
 if (playButton) {
@@ -308,18 +309,18 @@ if (playButton) {
     if (audioContext.state === "suspended") await audioContext.resume();
     if (audio.paused) {
       await audio.play();
-      playButton.textContent = "Pause";
+      playButton.textContent = "Pausar";
       setStatus("Reproduciendo archivo.");
     } else {
       audio.pause();
-      playButton.textContent = "Play";
+      playButton.textContent = "Reproducir";
     }
   });
 }
 audio.addEventListener("loadedmetadata", updateSeekUI);
 audio.addEventListener("timeupdate", updateSeekUI);
 audio.addEventListener("ended", () => {
-  if (playButton) playButton.textContent = "Play";
+  if (playButton) playButton.textContent = "Reproducir";
 });
 if (seekSlider) {
   seekSlider.addEventListener("input", () => {
@@ -477,7 +478,7 @@ resetButton.addEventListener("click", () => {
   if (!confirm("¿Empezar un ser nuevo? El que tienes se perderá.")) return;
   localStorage.removeItem(DNA_KEY);
   dna = loadDNA();
-  birth = 0;
+  birth = 0.74;
   born = false;
   refreshBeingLine();
   setStatus("Ser reiniciado. Pon música para que el nuevo despierte.");
@@ -493,23 +494,31 @@ const scene = new THREE.Scene();
 scene.background = COLOR_VOID.clone();
 
 const camera = new THREE.PerspectiveCamera(
-  55, window.innerWidth / window.innerHeight, 0.1, 100
+  52, window.innerWidth / window.innerHeight, 0.1, 100
 );
-camera.position.set(0, 0, 3.4);
+camera.position.set(0, 0, 4.15);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 0.78;
 document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight("#8f7bff", "#050509", 0.85));
+const keyLight = new THREE.DirectionalLight("#ffe0b7", 0.95);
+keyLight.position.set(2.5, 3, 4);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight("#6de7ff", 0.62);
+rimLight.position.set(-3, 1.5, 2.2);
+scene.add(rimLight);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.35, 0.7, 0.18
+  0.2, 0.5, 0.2
 );
 composer.addPass(bloomPass);
 
@@ -564,6 +573,7 @@ const bodyUniforms = {
   uColorCalm:  { value: new THREE.Color("#3a2d6b") },
   uColorActive:{ value: new THREE.Color("#7d5fd6") },
   uColorRim:   { value: new THREE.Color("#ffcf9c") },
+  uColorDeep:  { value: new THREE.Color("#05040d") },
 };
 
 const bodyMaterial = new THREE.ShaderMaterial({
@@ -573,6 +583,7 @@ const bodyMaterial = new THREE.ShaderMaterial({
     uniform float uTime, uArousal, uTension, uPulse, uBirth, uCrisp;
     varying vec3 vNormal;
     varying vec3 vViewDir;
+    varying vec3 vModelPos;
     varying float vDisp;
 
     void main() {
@@ -598,6 +609,7 @@ const bodyMaterial = new THREE.ShaderMaterial({
       pos *= uBirth;
 
       vDisp = disp;
+      vModelPos = pos;
       vNormal = normalize(normalMatrix * n);
       vec4 mv = modelViewMatrix * vec4(pos, 1.0);
       vViewDir = normalize(-mv.xyz);
@@ -605,21 +617,33 @@ const bodyMaterial = new THREE.ShaderMaterial({
     }
   `,
   fragmentShader: `
-    uniform float uArousal, uBirth;
-    uniform vec3 uColorCalm, uColorActive, uColorRim;
+    uniform float uTime, uArousal, uTension, uBirth;
+    uniform vec3 uColorCalm, uColorActive, uColorRim, uColorDeep;
     varying vec3 vNormal;
     varying vec3 vViewDir;
+    varying vec3 vModelPos;
     varying float vDisp;
 
     void main() {
-      // El color NO mapea frecuencias: mapea el estado interno del ser.
-      vec3 base = mix(uColorCalm, uColorActive, uArousal);
-      // Crestas más claras, valles más oscuros: da volumen sin luces.
-      base += vDisp * 0.45;
+      vec3 normal = normalize(vNormal);
+      vec3 viewDir = normalize(vViewDir);
+      vec3 lightDir = normalize(vec3(-0.45, 0.72, 0.52));
+      float lambert = max(dot(normal, lightDir), 0.0);
+      float halfLambert = lambert * 0.5 + 0.5;
+      float fres = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.35);
 
-      // Borde luminoso (fresnel): el contorno del ser brilla.
-      float fres = pow(1.0 - max(dot(vNormal, vViewDir), 0.0), 2.6);
-      vec3 col = base + uColorRim * fres * (0.35 + uArousal * 0.9);
+      vec3 base = mix(uColorCalm, uColorActive, uArousal);
+      float contour = sin(vModelPos.x * 8.0 + vModelPos.y * 5.0 - uTime * 0.35);
+      contour += sin(vModelPos.z * 11.0 - vModelPos.y * 3.0 + uTime * 0.22) * 0.45;
+      contour += sin((vModelPos.x + vModelPos.z) * 19.0 + uTension * 2.0) * 0.16;
+      float vein = smoothstep(0.78, 0.97, abs(contour));
+      float pore = smoothstep(0.84, 0.99, abs(sin(dot(vModelPos, vec3(23.0, 31.0, 17.0)))));
+
+      vec3 col = mix(uColorDeep, base, 0.52 + halfLambert * 0.52);
+      col += vDisp * 0.38;
+      col = mix(col, uColorRim, vein * (0.08 + uArousal * 0.14));
+      col += uColorRim * fres * (0.36 + uArousal * 1.05);
+      col += base * pore * 0.06;
 
       gl_FragColor = vec4(col, uBirth);
     }
@@ -627,28 +651,133 @@ const bodyMaterial = new THREE.ShaderMaterial({
 });
 
 // Cuerpo: icosaedro subdividido — malla densa y uniforme para deformar.
-const bodyGeometry = new THREE.IcosahedronGeometry(1.05, 5);
+const bodyGeometry = new THREE.IcosahedronGeometry(1.05, 4);
 const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+
+const coreMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: {
+    uTime: { value: 0 },
+    uArousal: { value: 0 },
+    uBirth: { value: 0 },
+    uColor: { value: new THREE.Color("#ffcf9c") },
+  },
+  vertexShader: `
+    uniform float uTime, uArousal, uBirth;
+    varying vec3 vNormal;
+    varying vec3 vViewDir;
+
+    void main() {
+      vec3 pos = position * (0.68 + uArousal * 0.16);
+      pos *= 1.0 + sin(uTime * 2.1 + position.y * 3.0) * 0.035;
+      pos *= uBirth;
+      vNormal = normalize(normalMatrix * normal);
+      vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+      vViewDir = normalize(-mv.xyz);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    uniform float uArousal, uBirth;
+    uniform vec3 uColor;
+    varying vec3 vNormal;
+    varying vec3 vViewDir;
+
+    void main() {
+      float fres = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0), 1.7);
+      float alpha = (0.18 + uArousal * 0.28) * (0.35 + fres) * uBirth;
+      gl_FragColor = vec4(uColor * (0.55 + uArousal), alpha);
+    }
+  `,
+});
+const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.82, 4), coreMaterial);
 
 // El ser entero (cuerpo + cara) vive en este grupo: así se mueve junto.
 const being = new THREE.Group();
+being.add(core);
 being.add(body);
 scene.add(being);
+
+const filamentGroup = new THREE.Group();
+being.add(filamentGroup);
+
+const filamentMaterials = [
+  new THREE.MeshBasicMaterial({
+    color: "#ffcf9c",
+    transparent: true,
+    opacity: 0.2,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }),
+  new THREE.MeshBasicMaterial({
+    color: "#8ee7ff",
+    transparent: true,
+    opacity: 0.14,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }),
+];
+
+const filaments = [];
+for (let i = 0; i < 6; i++) {
+  const radius = 1.02 + i * 0.055;
+  const tube = 0.004 + (i % 3) * 0.0015;
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, tube, 6, 160),
+    filamentMaterials[i % filamentMaterials.length].clone()
+  );
+  ring.rotation.set(
+    Math.PI * (0.18 + i * 0.073),
+    Math.PI * (0.07 + i * 0.11),
+    Math.PI * (i * 0.17)
+  );
+  ring.userData.spin = (i % 2 ? -1 : 1) * (0.08 + i * 0.018);
+  ring.userData.phase = i * 0.7;
+  filamentGroup.add(ring);
+  filaments.push(ring);
+}
 
 // --- Ojos: dos puntos. Bastan para que el cerebro vea un ser que mira. ---
 function makeEye() {
   const eye = new THREE.Group();
   const ball = new THREE.Mesh(
-    new THREE.SphereGeometry(0.15, 24, 24),
-    new THREE.MeshBasicMaterial({ color: "#0a0a12" })
+    new THREE.SphereGeometry(0.16, 32, 32),
+    new THREE.MeshStandardMaterial({
+      color: "#f5f0ff",
+      roughness: 0.22,
+      metalness: 0,
+      emissive: "#171024",
+      emissiveIntensity: 0.36,
+    })
   );
-  // Pequeño brillo: una chispa de vida en la mirada.
+  const iris = new THREE.Mesh(
+    new THREE.CircleGeometry(0.078, 36),
+    new THREE.MeshBasicMaterial({
+      color: "#9dfff0",
+      transparent: true,
+      opacity: 0.92,
+    })
+  );
+  const pupil = new THREE.Mesh(
+    new THREE.CircleGeometry(0.039, 32),
+    new THREE.MeshBasicMaterial({ color: "#05050a" })
+  );
   const glint = new THREE.Mesh(
-    new THREE.SphereGeometry(0.045, 12, 12),
-    new THREE.MeshBasicMaterial({ color: "#ffffff" })
+    new THREE.CircleGeometry(0.018, 16),
+    new THREE.MeshBasicMaterial({
+      color: "#ffffff",
+      transparent: true,
+      opacity: 0.95,
+    })
   );
-  glint.position.set(0.05, 0.05, 0.12);
+  iris.position.z = 0.162;
+  pupil.position.z = 0.164;
+  glint.position.set(0.032, 0.034, 0.166);
   eye.add(ball);
+  eye.add(iris);
+  eye.add(pupil);
   eye.add(glint);
   return eye;
 }
@@ -662,6 +791,134 @@ rightEye.position.set(0.34, 0.16, 1.0);
 face.add(leftEye);
 face.add(rightEye);
 being.add(face);
+
+// El GLB generado por IA sustituye visualmente al cuerpo procedural.
+// Dejamos las piezas antiguas apagadas para conservar el motor de estado/audio
+// mientras validamos el modelo real.
+core.visible = false;
+body.visible = false;
+filamentGroup.visible = false;
+face.visible = false;
+let proceduralFallbackActive = false;
+
+const MODEL_URL = "/models/cute-being.glb";
+const modelPivot = new THREE.Group();
+const modelMaterials = [];
+let modelRoot = null;
+let modelMixer = null;
+let modelLoadProgress = 0;
+
+const loadingGlow = new THREE.Mesh(
+  new THREE.SphereGeometry(0.56, 32, 32),
+  new THREE.MeshBasicMaterial({
+    color: "#8ee7ff",
+    transparent: true,
+    opacity: 0.1,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+);
+being.add(loadingGlow);
+being.add(modelPivot);
+
+const auraMaterial = new THREE.MeshBasicMaterial({
+  color: "#a78bff",
+  transparent: true,
+  opacity: 0.07,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+const aura = new THREE.Mesh(new THREE.SphereGeometry(0.92, 32, 32), auraMaterial);
+aura.visible = false;
+being.add(aura);
+
+const beatRingMaterial = new THREE.MeshBasicMaterial({
+  color: "#ffcf9c",
+  transparent: true,
+  opacity: 0.16,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+const beatRing = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.007, 8, 128), beatRingMaterial);
+beatRing.rotation.x = Math.PI * 0.5;
+beatRing.visible = false;
+being.add(beatRing);
+
+const sparklePositions = new Float32Array(90 * 3);
+for (let i = 0; i < 90; i++) {
+  const r = 0.85 + Math.random() * 0.42;
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  sparklePositions[i * 3] = Math.sin(phi) * Math.cos(theta) * r;
+  sparklePositions[i * 3 + 1] = Math.cos(phi) * r;
+  sparklePositions[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * r;
+}
+const sparkleGeometry = new THREE.BufferGeometry();
+sparkleGeometry.setAttribute("position", new THREE.BufferAttribute(sparklePositions, 3));
+const sparkleMaterial = new THREE.PointsMaterial({
+  color: "#ffffff",
+  size: 0.018,
+  transparent: true,
+  opacity: 0.0,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+const sparkles = new THREE.Points(sparkleGeometry, sparkleMaterial);
+being.add(sparkles);
+
+const gltfLoader = new GLTFLoader();
+gltfLoader.load(
+  MODEL_URL,
+  (gltf) => {
+    loadingGlow.visible = false;
+    modelRoot = gltf.scene;
+
+    const box = new THREE.Box3().setFromObject(modelRoot);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDimension = Math.max(size.x, size.y, size.z) || 1;
+    modelRoot.position.sub(center);
+    modelRoot.scale.setScalar(1.38 / maxDimension);
+
+    modelRoot.traverse((child) => {
+      if (!child.isMesh) return;
+      child.frustumCulled = false;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((material) => {
+        if (!material) return;
+        material.roughness = Math.min(0.9, Math.max(material.roughness ?? 0.55, 0.42));
+        material.metalness = Math.min(material.metalness ?? 0, 0.05);
+        material.envMapIntensity = 1.35;
+        if (material.emissive) material.emissive.set("#08040f");
+        modelMaterials.push(material);
+      });
+    });
+
+    if (gltf.animations.length > 0) {
+      modelMixer = new THREE.AnimationMixer(modelRoot);
+      gltf.animations.forEach((clip) => modelMixer.clipAction(clip).play());
+    }
+
+    aura.visible = true;
+    beatRing.visible = true;
+    modelPivot.add(modelRoot);
+    setStatus("Modelo cargado. Elige una fuente de audio para despertarlo.");
+    applyDNAtoBeing();
+  },
+  (event) => {
+    if (!event.total) return;
+    modelLoadProgress = event.loaded / event.total;
+    setStatus(`Cargando ser 3D... ${Math.round(modelLoadProgress * 100)}%`);
+  },
+  (error) => {
+    console.error("No se pudo cargar el modelo GLB", error);
+    loadingGlow.visible = false;
+    body.visible = true;
+    face.visible = true;
+    proceduralFallbackActive = true;
+    setStatus("No se pudo cargar el modelo 3D; usando el ser básico.");
+  }
+);
 
 // Aplica al shader el color y la forma de reposo que dicta el ADN.
 function applyDNAtoBeing() {
@@ -683,7 +940,16 @@ function applyDNAtoBeing() {
   );
   bodyUniforms.uColorCalm.value.copy(calm);
   bodyUniforms.uColorActive.value.copy(active);
+  bodyUniforms.uColorDeep.value.copy(calm).multiplyScalar(0.16);
   bodyUniforms.uCrisp.value = THREE.MathUtils.clamp(dna.density, 0, 1);
+  coreMaterial.uniforms.uColor.value.copy(active).lerp(bodyUniforms.uColorRim.value, 0.34);
+  auraMaterial.color.copy(active);
+  beatRingMaterial.color.copy(bodyUniforms.uColorRim.value);
+  modelMaterials.forEach((material) => {
+    if (!material.emissive) return;
+    material.emissive.copy(active).multiplyScalar(0.035);
+    material.emissiveIntensity = 0.32;
+  });
 }
 applyDNAtoBeing();
 
@@ -696,7 +962,7 @@ let tension = 0;   // alerta
 let pulse = 0;     // respingo del golpe
 let bodyScale = 1; // escala global: se encoge en el silencio
 
-let birth = 0;     // 0..1
+let birth = 0.74;  // 0..1
 let born = false;  // ¿ya nació?
 
 // Parpadeo: un detalle barato que dispara mucha sensación de vida.
@@ -707,6 +973,14 @@ let nextBlink = 2 + Math.random() * 4;
 let gazeX = 0, gazeY = 0;
 let gazeTargetX = 0, gazeTargetY = 0;
 let gazeTimer = 0;
+
+function updateSceneLayout() {
+  const desktop = window.innerWidth >= 820;
+  being.position.x = desktop ? 0.92 : 0;
+  being.position.y = desktop ? 0.02 : -0.18;
+  camera.position.z = desktop ? 4.15 : 4.65;
+}
+updateSceneLayout();
 
 // ============================================================
 // 9 · Bucle de vida
@@ -719,6 +993,7 @@ function animate() {
   const t = clock.elapsedTime;
 
   updateAudioValues();
+  if (modelMixer) modelMixer.update(dt);
 
   // --- Nacimiento: al primer audio real, el ser despierta ---
   if (!born && overallEnergy > 0.06) {
@@ -743,17 +1018,65 @@ function animate() {
   bodyScale += (targetScale - bodyScale) * 0.05;
   being.scale.setScalar(bodyScale * (0.4 + birth * 0.6));
 
-  // --- Volcado al shader ---
-  bodyUniforms.uTime.value = t;
-  bodyUniforms.uArousal.value = arousal;
-  bodyUniforms.uTension.value = tension;
-  bodyUniforms.uPulse.value = pulse;
-  bodyUniforms.uBirth.value = birth;
+  if (loadingGlow.visible) {
+    loadingGlow.rotation.y += dt * 0.6;
+    loadingGlow.scale.setScalar(0.8 + modelLoadProgress * 0.34 + Math.sin(t * 2.2) * 0.03);
+    loadingGlow.material.opacity = 0.1 + modelLoadProgress * 0.18;
+  }
 
-  // --- El cuerpo gira despacio sobre sí mismo: la piel viva se ve por
-  //     todos lados. La cara NO gira: los ojos siempre te miran. ---
-  body.rotation.y += dt * (0.15 + arousal * 0.5);
-  body.rotation.x = Math.sin(t * 0.3) * 0.15;
+  if (proceduralFallbackActive) {
+    // --- Volcado al shader ---
+    bodyUniforms.uTime.value = t;
+    bodyUniforms.uArousal.value = arousal;
+    bodyUniforms.uTension.value = tension;
+    bodyUniforms.uPulse.value = pulse;
+    bodyUniforms.uBirth.value = birth;
+    coreMaterial.uniforms.uTime.value = t;
+    coreMaterial.uniforms.uArousal.value = arousal;
+    coreMaterial.uniforms.uBirth.value = birth;
+
+    // --- El cuerpo gira despacio sobre sí mismo: la piel viva se ve por
+    //     todos lados. La cara NO gira: los ojos siempre te miran. ---
+    body.rotation.y += dt * (0.15 + arousal * 0.5);
+    body.rotation.x = Math.sin(t * 0.3) * 0.15;
+    core.rotation.y -= dt * (0.08 + arousal * 0.26);
+    core.rotation.x = Math.sin(t * 0.23) * 0.16;
+
+    filamentGroup.rotation.y += dt * (0.08 + arousal * 0.22);
+    filamentGroup.rotation.x = Math.sin(t * 0.18) * 0.08;
+    filaments.forEach((ring, index) => {
+      ring.rotation.z += dt * ring.userData.spin * (0.6 + arousal * 1.8);
+      const flare = onsetActive > 0 ? 0.18 : 0;
+      ring.scale.setScalar(1 + Math.sin(t * 0.7 + ring.userData.phase) * 0.018 + arousal * 0.08 + flare);
+      ring.material.opacity = (index % 2 ? 0.11 : 0.17) + arousal * 0.12 + flare * 0.22;
+    });
+  }
+
+  if (modelRoot) {
+    const happyPulse = pulse * 0.1 + (onsetActive > 0 ? 0.035 : 0);
+    const idleFloat = Math.sin(t * 1.18) * 0.055;
+    modelPivot.position.y = idleFloat + arousal * 0.075;
+    modelPivot.rotation.y = Math.sin(t * 0.36) * 0.22 + gazeX * 0.55;
+    modelPivot.rotation.x = Math.sin(t * 0.42) * 0.06 + gazeY * 0.22;
+    modelPivot.rotation.z = Math.sin(t * 0.28) * 0.035;
+    modelPivot.scale.set(
+      1 + happyPulse * 0.9,
+      1 - happyPulse * 0.34,
+      1 + happyPulse * 0.45
+    );
+
+    aura.scale.setScalar(0.98 + arousal * 0.2 + pulse * 0.12);
+    aura.material.opacity = 0.055 + arousal * 0.08 + pulse * 0.05;
+    beatRing.rotation.z += dt * (0.16 + arousal * 0.9);
+    beatRing.scale.setScalar(1.0 + arousal * 0.16 + pulse * 0.34);
+    beatRing.material.opacity = 0.08 + arousal * 0.12 + pulse * 0.18;
+    sparkles.rotation.y -= dt * (0.035 + arousal * 0.16);
+    sparkleMaterial.opacity = 0.015 + arousal * 0.1 + pulse * 0.06;
+    modelMaterials.forEach((material) => {
+      if (!material.emissive) return;
+      material.emissiveIntensity = 0.22 + arousal * 0.45 + pulse * 0.22;
+    });
+  }
 
   // --- Mirada: deriva sola; con energía mira más lejos y más a menudo ---
   gazeTimer -= dt;
@@ -780,13 +1103,15 @@ function animate() {
       nextBlink = 2 + Math.random() * 4;
     }
   }
-  const eyeOpen = 1 - Math.max(0, Math.sin(blink * Math.PI));
-  leftEye.scale.y = eyeOpen;
-  rightEye.scale.y = eyeOpen;
-  // Los ojos solo aparecen cuando el nacimiento está casi completo.
-  const eyeVisible = THREE.MathUtils.clamp((birth - 0.65) / 0.35, 0, 1);
-  leftEye.scale.x = rightEye.scale.x = eyeVisible;
-  leftEye.scale.z = rightEye.scale.z = eyeVisible;
+  if (proceduralFallbackActive) {
+    const eyeOpen = 1 - Math.max(0, Math.sin(blink * Math.PI));
+    leftEye.scale.y = Math.max(0.06, eyeOpen);
+    rightEye.scale.y = Math.max(0.06, eyeOpen);
+    // Los ojos solo aparecen cuando el nacimiento está casi completo.
+    const eyeVisible = THREE.MathUtils.clamp((birth - 0.65) / 0.35, 0, 1);
+    leftEye.scale.x = rightEye.scale.x = eyeVisible;
+    leftEye.scale.z = rightEye.scale.z = eyeVisible;
+  }
 
   // --- El ADN se alimenta y, de vez en cuando, se guarda ---
   feedDNA(dt);
@@ -799,7 +1124,7 @@ function animate() {
   }
 
   // --- Bloom: el ser brilla un poco más cuando se excita ---
-  bloomPass.strength = 0.3 + arousal * 0.5;
+  bloomPass.strength = 0.16 + arousal * 0.32;
 
   // --- Cámara: deriva mínima, mantiene al ser centrado ---
   camera.position.x = Math.sin(t * 0.2) * 0.05;
@@ -817,6 +1142,7 @@ animate();
 // ============================================================
 
 window.addEventListener("resize", () => {
+  updateSceneLayout();
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
