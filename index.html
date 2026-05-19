@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Audio Tunnel</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="ui">
+        <p class="eyebrow">Creative Coding Experiment</p>
+        <h1>Audio Tunnel</h1>
+        <p class="description">
+          Upload a track and watch the tunnel react to bass, mids and highs.
+        </p>
+
+        <div class="controls">
+          <input id="audio-upload" type="file" accept="audio/*" />
+          <button id="play-button" disabled>Play</button>
+        </div>
+
+        <div class="meters">
+          <div>
+            <span>Bass</span>
+            <div class="meter"><div id="bass-meter"></div></div>
+          </div>
+          <div>
+            <span>Mids</span>
+            <div class="meter"><div id="mids-meter"></div></div>
+          </div>
+          <div>
+            <span>Highs</span>
+            <div class="meter"><div id="highs-meter"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <audio id="audio" crossorigin="anonymous"></audio>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
