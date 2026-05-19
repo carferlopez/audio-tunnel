@@ -15,8 +15,35 @@
         </p>
 
         <div class="controls">
+          <label class="control-label" for="audio-upload">Audio file</label>
           <input id="audio-upload" type="file" accept="audio/*" />
-          <button id="play-button" disabled>Play</button>
+          <span id="file-name" class="file-name">No track selected</span>
+
+          <div class="transport">
+            <button id="play-button" disabled>Play</button>
+            <span id="current-time" class="time-label">0:00</span>
+            <input
+              id="seek-slider"
+              type="range"
+              min="0"
+              max="100"
+              value="0"
+              step="0.1"
+              disabled
+            />
+            <span id="duration" class="time-label">0:00</span>
+          </div>
+
+          <div class="volume-control">
+            <label class="control-label" for="volume-slider">Volume</label>
+            <input
+              id="volume-slider"
+              type="range"
+              min="0"
+              max="100"
+              value="80"
+            />
+          </div>
         </div>
 
         <div class="meters">

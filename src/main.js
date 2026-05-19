@@ -4,8 +4,21 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 
+/* =====================================================================
+   AUDIO TUNNEL — v3
+   ---------------------------------------------------------------------
+   Motor: "el túnel es la memoria de la canción" (v2 intacta).
+   Nuevo: la fuente de audio ya no es solo un archivo. Tres modos:
+     · TAB  -> captura el audio de una pestaña/sistema (Spotify, YouTube,
+               Apple Music, Amazon... da igual: capturamos el RESULTADO).
+     · MIC  -> escucha por el micrófono. Universal, también en móvil.
+     · FILE -> subir un archivo. Queda como último recurso.
+   No nos conectamos a las plataformas (imposible por DRM): capturamos
+   el sonido que ya suena, con permiso explícito del usuario.
+   ===================================================================== */
+
 // ------------------------------------------------------
-// DOM
+// DOM base
 // ------------------------------------------------------
 
 const audio = document.querySelector("#audio");
@@ -23,8 +36,6 @@ const bassMeter = document.querySelector("#bass-meter");
 const midsMeter = document.querySelector("#mids-meter");
 const highsMeter = document.querySelector("#highs-meter");
 
-// Build missing player controls from JS so the prototype keeps working
-// even if the HTML is still the older version.
 if (controls) {
   if (!audioUpload) {
     const fileControl = document.createElement("label");
@@ -34,17 +45,14 @@ if (controls) {
       <span class="file-label">Choose audio</span>
       <span id="file-name" class="file-name">No track selected</span>
     `;
-
     audioUpload = document.createElement("input");
     audioUpload.id = "audio-upload";
     audioUpload.className = "audio-upload";
     audioUpload.type = "file";
     audioUpload.accept = "audio/*";
-
     controls.prepend(audioUpload);
     controls.prepend(fileControl);
   }
-
   if (!playButton) {
     playButton = document.createElement("button");
     playButton.id = "play-button";
@@ -52,7 +60,6 @@ if (controls) {
     playButton.textContent = "Play";
     controls.appendChild(playButton);
   }
-
   if (!seekSlider || !currentTimeLabel || !durationLabel) {
     const transport = document.createElement("div");
     transport.className = "transport";
@@ -63,7 +70,6 @@ if (controls) {
     `;
     controls.appendChild(transport);
   }
-
   if (!volumeSlider) {
     const volumeControl = document.createElement("div");
     volumeControl.className = "volume-control";
@@ -73,7 +79,6 @@ if (controls) {
     `;
     controls.appendChild(volumeControl);
   }
-
   audioUpload = document.querySelector("#audio-upload");
   playButton = document.querySelector("#play-button");
   fileNameLabel = document.querySelector("#file-name");
@@ -84,59 +89,212 @@ if (controls) {
 }
 
 // ------------------------------------------------------
-// Audio setup
+// Controles de FUENTE (inyectados desde JS, sin tocar el HTML)
+// ------------------------------------------------------
+
+const sourceStyle = document.createElement("style");
+sourceStyle.textContent = `
+  .source-row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .source-btn {
+    flex:1; min-width:150px; padding:10px 14px; cursor:pointer;
+    background:rgba(109,79,196,0.12); color:#e8e6f2;
+    border:1px solid rgba(109,79,196,0.5); border-radius:8px;
+    font:inherit; font-size:0.82rem; letter-spacing:0.02em;
+    transition:background .15s ease, border-color .15s ease;
+  }
+  .source-btn:hover { background:rgba(109,79,196,0.28); border-color:rgba(109,79,196,0.9); }
+  .source-btn.active { background:rgba(255,207,156,0.18); border-color:#ffcf9c; color:#fff; }
+  .source-status { margin:2px 0 14px; font-size:0.74rem; opacity:0.6; }
+`;
+document.head.appendChild(sourceStyle);
+
+const tabButton = document.createElement("button");
+tabButton.className = "source-btn";
+tabButton.textContent = "Capturar pestaña / sistema";
+
+const micButton = document.createElement("button");
+micButton.className = "source-btn";
+micButton.textContent = "Micrófono";
+
+const sourceRow = document.createElement("div");
+sourceRow.className = "source-row";
+sourceRow.appendChild(tabButton);
+sourceRow.appendChild(micButton);
+
+const sourceStatus = document.createElement("p");
+sourceStatus.className = "source-status";
+sourceStatus.textContent = "Elige una fuente de audio para empezar.";
+
+if (controls && controls.parentElement) {
+  controls.parentElement.insertBefore(sourceRow, controls);
+  controls.parentElement.insertBefore(sourceStatus, controls);
+}
+
+function setStatus(text) {
+  sourceStatus.textContent = text;
+}
+
+function markActive(mode) {
+  tabButton.classList.toggle("active", mode === "tab");
+  micButton.classList.toggle("active", mode === "mic");
+}
+
+// ------------------------------------------------------
+// Subsistema de audio: contexto, ruteo y fuentes
 // ------------------------------------------------------
 
 let audioContext;
 let analyser;
-let source;
 let frequencyData;
 
-let bassEnergy = 0;
-let midsEnergy = 0;
-let highsEnergy = 0;
-let overallEnergy = 0;
+let mediaElementSource = null; // modo archivo (solo se puede crear UNA vez)
+let liveStream = null;         // MediaStream de captura en vivo
+let liveSource = null;         // nodo de la captura en vivo
+let activeMode = "none";       // "none" | "file" | "tab" | "mic"
 
-function averageRange(data, start, end) {
-  let sum = 0;
-  const safeEnd = Math.min(end, data.length);
-
-  for (let i = start; i < safeEnd; i++) {
-    sum += data[i];
-  }
-
-  return sum / Math.max(1, safeEnd - start) / 255;
-}
-
-function setupAudioAnalyzer() {
+function ensureContext() {
   if (audioContext) return;
-
   audioContext = new AudioContext();
   analyser = audioContext.createAnalyser();
-
   analyser.fftSize = 1024;
   analyser.smoothingTimeConstant = 0.82;
-
   frequencyData = new Uint8Array(analyser.frequencyBinCount);
-
-  source = audioContext.createMediaElementSource(audio);
-  source.connect(analyser);
-  analyser.connect(audioContext.destination);
 }
+
+// Desconecta el grafo actual y detiene la captura en vivo si la hubiera.
+function clearRouting() {
+  if (analyser) analyser.disconnect();
+  if (liveSource) {
+    liveSource.disconnect();
+    liveSource = null;
+  }
+  if (mediaElementSource) mediaElementSource.disconnect();
+  if (liveStream) {
+    liveStream.getTracks().forEach((t) => t.stop());
+    liveStream = null;
+  }
+}
+
+// --- Modo TAB: capturar el audio de una pestaña o del sistema ---
+async function captureTab() {
+  try {
+    ensureContext();
+    await audioContext.resume();
+    setStatus("Pidiendo permiso para capturar...");
+
+    // video:true es OBLIGATORIO: Chrome solo ofrece "compartir audio de la
+    // pestaña" cuando compartes una pestaña/pantalla con vídeo.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
+      systemAudio: "include",
+    });
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      setStatus('No llegó audio. Reintenta y marca la casilla "Compartir audio de la pestaña".');
+      return;
+    }
+
+    // El vídeo no nos interesa: lo detenemos para no gastar recursos.
+    stream.getVideoTracks().forEach((t) => t.stop());
+
+    clearRouting();
+    if (audio && !audio.paused) audio.pause();
+    liveStream = stream;
+    liveSource = audioContext.createMediaStreamSource(stream);
+
+    // CLAVE: NO conectamos a destination. El audio ya suena en el sistema;
+    // reproducirlo otra vez daría doble sonido / eco.
+    liveSource.connect(analyser);
+
+    activeMode = "tab";
+    markActive("tab");
+    setStatus("Capturando la pestaña. Pon música donde la tengas y suena el túnel.");
+
+    audioTracks[0].addEventListener("ended", () => {
+      if (activeMode === "tab") {
+        activeMode = "none";
+        markActive("none");
+        setStatus("Compartición detenida. Elige una fuente para continuar.");
+      }
+    });
+  } catch (err) {
+    if (err && err.name === "NotAllowedError") {
+      setStatus("Permiso cancelado.");
+    } else {
+      setStatus("No se pudo capturar: " + (err?.message || err));
+    }
+  }
+}
+
+// --- Modo MIC: escuchar por el micrófono ---
+async function captureMic() {
+  try {
+    ensureContext();
+    await audioContext.resume();
+    setStatus("Pidiendo permiso del micrófono...");
+
+    // Desactivamos los procesados del navegador: están pensados para voz
+    // y destrozarían la música (filtran graves, comprimen, cancelan).
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+
+    clearRouting();
+    if (audio && !audio.paused) audio.pause();
+    liveStream = stream;
+    liveSource = audioContext.createMediaStreamSource(stream);
+    liveSource.connect(analyser); // sin destination: evita realimentación
+
+    activeMode = "mic";
+    markActive("mic");
+    setStatus("Escuchando por el micrófono. Pon música cerca.");
+  } catch (err) {
+    if (err && err.name === "NotAllowedError") {
+      setStatus("Permiso de micrófono denegado.");
+    } else {
+      setStatus("No se pudo usar el micrófono: " + (err?.message || err));
+    }
+  }
+}
+
+// --- Modo FILE: el archivo subido (único modo que SÍ va a destination) ---
+function useFileSource() {
+  ensureContext();
+  if (!mediaElementSource) {
+    // createMediaElementSource solo puede llamarse una vez por elemento.
+    mediaElementSource = audioContext.createMediaElementSource(audio);
+  }
+  clearRouting();
+  mediaElementSource.connect(analyser);
+  analyser.connect(audioContext.destination); // el archivo sí debe sonar
+  activeMode = "file";
+  markActive("none");
+}
+
+tabButton.addEventListener("click", captureTab);
+micButton.addEventListener("click", captureMic);
+
+// ------------------------------------------------------
+// Reproductor de archivo (modo FILE)
+// ------------------------------------------------------
 
 function formatTime(seconds) {
   if (!Number.isFinite(seconds)) return "0:00";
-
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, "0");
-
   return `${minutes}:${remainingSeconds}`;
 }
 
 function updateSeekUI() {
   if (!seekSlider || !currentTimeLabel || !durationLabel) return;
   if (!audio.duration) return;
-
   seekSlider.value = (audio.currentTime / audio.duration) * 100;
   currentTimeLabel.textContent = formatTime(audio.currentTime);
   durationLabel.textContent = formatTime(audio.duration);
@@ -145,12 +303,8 @@ function updateSeekUI() {
 if (audioUpload) {
   audioUpload.addEventListener("change", (event) => {
     const file = event.target.files[0];
-
     if (!file) return;
-
-    if (fileNameLabel) {
-      fileNameLabel.textContent = file.name;
-    }
+    if (fileNameLabel) fileNameLabel.textContent = file.name;
 
     const url = URL.createObjectURL(file);
     audio.src = url;
@@ -161,7 +315,6 @@ if (audioUpload) {
       currentTimeLabel.textContent = "0:00";
       durationLabel.textContent = "0:00";
     }
-
     playButton.disabled = false;
     playButton.textContent = "Play";
   });
@@ -169,15 +322,13 @@ if (audioUpload) {
 
 if (playButton) {
   playButton.addEventListener("click", async () => {
-    setupAudioAnalyzer();
-
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
+    useFileSource();
+    if (audioContext.state === "suspended") await audioContext.resume();
 
     if (audio.paused) {
       await audio.play();
       playButton.textContent = "Pause";
+      setStatus("Reproduciendo archivo.");
     } else {
       audio.pause();
       playButton.textContent = "Play";
@@ -187,7 +338,6 @@ if (playButton) {
 
 audio.addEventListener("loadedmetadata", updateSeekUI);
 audio.addEventListener("timeupdate", updateSeekUI);
-
 audio.addEventListener("ended", () => {
   if (playButton) playButton.textContent = "Play";
 });
@@ -195,7 +345,6 @@ audio.addEventListener("ended", () => {
 if (seekSlider) {
   seekSlider.addEventListener("input", () => {
     if (!audio.duration) return;
-
     audio.currentTime = (seekSlider.value / 100) * audio.duration;
     updateSeekUI();
   });
@@ -208,179 +357,30 @@ if (volumeSlider) {
 }
 
 // ------------------------------------------------------
-// Scene setup
+// Lectura de audio + onsets
 // ------------------------------------------------------
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color("#020207");
-scene.fog = new THREE.Fog("#020207", 8, 42);
+let bassEnergy = 0;
+let midsEnergy = 0;
+let highsEnergy = 0;
+let overallEnergy = 0;
 
-const camera = new THREE.PerspectiveCamera(
-  78,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  120
-);
+let prevSpectrum = null;
+const fluxHistory = [];
+let onsetActive = 0;
+let onsetCooldown = 0;
 
-camera.position.set(0, 0, 4.6);
-
-const renderer = new THREE.WebGLRenderer({
-  antialias: true,
-});
-
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.02;
-
-document.body.appendChild(renderer.domElement);
-
-// ------------------------------------------------------
-// Soft postprocessing bloom
-// ------------------------------------------------------
-
-const composer = new EffectComposer(renderer);
-
-const renderPass = new RenderPass(scene, camera);
-composer.addPass(renderPass);
-
-const bloomPass = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.28,
-  0.38,
-  0.24
-);
-
-composer.addPass(bloomPass);
-
-// ------------------------------------------------------
-// Lights
-// ------------------------------------------------------
-
-const ambientLight = new THREE.AmbientLight("#ffffff", 0.22);
-scene.add(ambientLight);
-
-const pointLight = new THREE.PointLight("#8b5cf6", 10, 40);
-pointLight.position.set(0, 0, 3);
-scene.add(pointLight);
-
-const rearLight = new THREE.PointLight("#22d3ee", 7, 58);
-rearLight.position.set(0, 0, -18);
-scene.add(rearLight);
-
-// ------------------------------------------------------
-// Tunnel rings
-// ------------------------------------------------------
-
-const tunnelGroup = new THREE.Group();
-scene.add(tunnelGroup);
-
-const tunnelSegments = [];
-const segmentCount = 42;
-const segmentSpacing = 1.08;
-
-const ringGeometry = new THREE.TorusGeometry(3, 0.04, 16, 128);
-
-for (let i = 0; i < segmentCount; i++) {
-  const material = new THREE.MeshBasicMaterial({
-    color: new THREE.Color().setHSL(0.68 + i * 0.006, 0.9, 0.54),
-    transparent: true,
-    opacity: 0.72,
-    depthWrite: false,
-  });
-
-  const ring = new THREE.Mesh(ringGeometry, material);
-
-  ring.position.z = -i * segmentSpacing;
-  ring.rotation.z = i * 0.21;
-
-  tunnelGroup.add(ring);
-  tunnelSegments.push(ring);
+function averageRange(data, start, end) {
+  let sum = 0;
+  const safeEnd = Math.min(end, data.length);
+  for (let i = start; i < safeEnd; i++) sum += data[i];
+  return sum / Math.max(1, safeEnd - start) / 255;
 }
-
-// ------------------------------------------------------
-// Inner spiral lines
-// ------------------------------------------------------
-
-const spiralGroup = new THREE.Group();
-scene.add(spiralGroup);
-
-const spiralLines = [];
-const spiralCount = 8;
-const pointsPerSpiral = 260;
-const spiralLength = segmentCount * segmentSpacing;
-
-for (let s = 0; s < spiralCount; s++) {
-  const points = [];
-
-  for (let i = 0; i < pointsPerSpiral; i++) {
-    const t = i / pointsPerSpiral;
-    const angle = t * Math.PI * 18 + s * ((Math.PI * 2) / spiralCount);
-    const radius = 2.85 + Math.sin(t * Math.PI * 10) * 0.08;
-    const z = -t * spiralLength;
-
-    points.push(
-      new THREE.Vector3(
-        Math.cos(angle) * radius,
-        Math.sin(angle) * radius,
-        z
-      )
-    );
-  }
-
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-
-  const material = new THREE.LineBasicMaterial({
-    color: new THREE.Color().setHSL(0.52 + s * 0.035, 0.88, 0.56),
-    transparent: true,
-    opacity: 0.3,
-  });
-
-  const line = new THREE.Line(geometry, material);
-  spiralGroup.add(line);
-  spiralLines.push(line);
-}
-
-// ------------------------------------------------------
-// Particles
-// ------------------------------------------------------
-
-const particleCount = 1500;
-const particleGeometry = new THREE.BufferGeometry();
-const particlePositions = new Float32Array(particleCount * 3);
-
-for (let i = 0; i < particleCount; i++) {
-  const radius = 1.2 + Math.random() * 2.8;
-  const angle = Math.random() * Math.PI * 2;
-  const z = -Math.random() * spiralLength;
-
-  particlePositions[i * 3] = Math.cos(angle) * radius;
-  particlePositions[i * 3 + 1] = Math.sin(angle) * radius;
-  particlePositions[i * 3 + 2] = z;
-}
-
-particleGeometry.setAttribute(
-  "position",
-  new THREE.BufferAttribute(particlePositions, 3)
-);
-
-const particleMaterial = new THREE.PointsMaterial({
-  color: "#eef2ff",
-  size: 0.017,
-  transparent: true,
-  opacity: 0.46,
-  depthWrite: false,
-});
-
-const particles = new THREE.Points(particleGeometry, particleMaterial);
-scene.add(particles);
-
-// ------------------------------------------------------
-// Audio values
-// ------------------------------------------------------
 
 function updateAudioValues() {
+  if (onsetCooldown > 0) onsetCooldown--;
+  if (onsetActive > 0) onsetActive--;
+
   if (!analyser || !frequencyData) {
     bassEnergy *= 0.92;
     midsEnergy *= 0.92;
@@ -404,94 +404,152 @@ function updateAudioValues() {
   if (bassMeter) bassMeter.style.width = `${bassEnergy * 100}%`;
   if (midsMeter) midsMeter.style.width = `${midsEnergy * 100}%`;
   if (highsMeter) highsMeter.style.width = `${highsEnergy * 100}%`;
+
+  // Flujo espectral: cuánto SUBE el espectro frame a frame -> golpes.
+  let flux = 0;
+  if (prevSpectrum) {
+    for (let i = 0; i < 120; i++) {
+      const diff = frequencyData[i] - prevSpectrum[i];
+      if (diff > 0) flux += diff;
+    }
+  }
+  flux /= 120 * 255;
+  prevSpectrum = frequencyData.slice();
+
+  fluxHistory.push(flux);
+  if (fluxHistory.length > 43) fluxHistory.shift();
+
+  const mean = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
+  const threshold = mean * 1.6 + 0.006;
+
+  if (flux > threshold && flux > 0.012 && onsetCooldown === 0) {
+    onsetActive = 14;
+    onsetCooldown = 8;
+  }
 }
 
 // ------------------------------------------------------
-// Animation
+// Paleta — dos colores. El color codifica energía, no decora.
+// ------------------------------------------------------
+
+const COLOR_VOID = new THREE.Color("#05060a");
+const COLOR_PULSE = new THREE.Color("#6d4fc4");
+const COLOR_SPARK = new THREE.Color("#ffcf9c");
+
+// ------------------------------------------------------
+// Escena
+// ------------------------------------------------------
+
+const scene = new THREE.Scene();
+scene.background = COLOR_VOID.clone();
+scene.fog = new THREE.Fog(COLOR_VOID.clone(), 10, 78);
+
+const camera = new THREE.PerspectiveCamera(
+  74,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  140
+);
+camera.position.set(0, 0, 4.6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.14,
+  0.5,
+  0.2
+);
+composer.addPass(bloomPass);
+
+// ------------------------------------------------------
+// Túnel de anillos-memoria
+// ------------------------------------------------------
+
+const tunnelGroup = new THREE.Group();
+scene.add(tunnelGroup);
+
+const RING_COUNT = 90;
+const RING_SPACING = 1.0;
+const TUNNEL_DEPTH = RING_COUNT * RING_SPACING;
+const BIRTH_RESET = 6;
+
+const ringGeometry = new THREE.TorusGeometry(3, 0.05, 12, 120);
+const ringSegments = [];
+
+for (let i = 0; i < RING_COUNT; i++) {
+  const material = new THREE.MeshBasicMaterial({
+    transparent: true,
+    depthWrite: false,
+  });
+  const ring = new THREE.Mesh(ringGeometry, material);
+  ring.position.z = -i * RING_SPACING;
+  ring.rotation.z = i * 0.14;
+  ring.userData.snapshot = { energy: 0, bass: 0, onset: 0 };
+  tunnelGroup.add(ring);
+  ringSegments.push(ring);
+}
+
+// Captura el sonido del instante en que el anillo nace al fondo.
+function captureSnapshot(ring) {
+  const s = ring.userData.snapshot;
+  s.energy = overallEnergy;
+  s.bass = bassEnergy;
+  s.onset = onsetActive > 0 ? 1 : 0;
+}
+
+// Pinta el anillo según su sonido CONGELADO, no el audio en vivo.
+const _tmpColor = new THREE.Color();
+function renderSnapshot(ring) {
+  const s = ring.userData.snapshot;
+  _tmpColor.copy(COLOR_VOID).lerp(COLOR_PULSE, Math.min(1, s.energy * 2.4));
+  if (s.onset) _tmpColor.lerp(COLOR_SPARK, 0.9);
+  ring.material.color.copy(_tmpColor);
+  ring.material.opacity = 0.1 + s.energy * 0.62 + s.onset * 0.28;
+  ring.scale.setScalar(1 + s.bass * 0.16 + s.onset * 0.14);
+}
+
+// ------------------------------------------------------
+// Animación
 // ------------------------------------------------------
 
 const clock = new THREE.Clock();
+let speed = 0.04;
 
 function animate() {
-  const elapsedTime = clock.getElapsedTime();
+  const t = clock.getElapsedTime();
 
   updateAudioValues();
 
-  const speed = 0.032 + overallEnergy * 0.18;
-  const bassPulse = bassEnergy * 0.42;
-  const midsTwist = midsEnergy * 0.018;
-  const highSparkle = highsEnergy * 0.048;
+  // El silencio frena el túnel; con inercia, arranca y para con peso.
+  const silence = overallEnergy < 0.04;
+  const targetSpeed = silence ? 0.004 : 0.05 + overallEnergy * 0.22;
+  speed += (targetSpeed - speed) * 0.04;
 
-  tunnelSegments.forEach((ring, index) => {
+  for (let i = 0; i < ringSegments.length; i++) {
+    const ring = ringSegments[i];
     ring.position.z += speed;
-
-    if (ring.position.z > 4.5) {
-      ring.position.z = -segmentCount * segmentSpacing;
+    if (ring.position.z > BIRTH_RESET) {
+      ring.position.z -= TUNNEL_DEPTH;
+      captureSnapshot(ring);
     }
-
-    ring.rotation.z += 0.004 + index * 0.00008 + midsTwist;
-
-    const organicWave = Math.sin(elapsedTime * 2.4 + index * 0.5) * 0.035;
-    const bassWave = Math.sin(elapsedTime * 8 + index * 0.18) * bassEnergy * 0.08;
-
-    ring.scale.setScalar(1 + organicWave + bassPulse + bassWave);
-
-    const hue = 0.57 + midsEnergy * 0.28 + index * 0.0035;
-    const lightness = 0.4 + bassEnergy * 0.22 + highsEnergy * 0.1;
-
-    ring.material.color.setHSL(hue % 1, 0.88, lightness);
-    ring.material.opacity = 0.42 + overallEnergy * 0.34;
-  });
-
-  spiralGroup.rotation.z += 0.0025 + midsEnergy * 0.018;
-
-  spiralLines.forEach((line, index) => {
-    line.position.z += speed * 0.95;
-
-    if (line.position.z > spiralLength) {
-      line.position.z = 0;
-    }
-
-    const hue = 0.48 + midsEnergy * 0.28 + index * 0.022;
-    line.material.color.setHSL(hue % 1, 0.88, 0.5 + highsEnergy * 0.16);
-    line.material.opacity = 0.16 + overallEnergy * 0.28;
-  });
-
-  const positions = particles.geometry.attributes.position.array;
-
-  for (let i = 0; i < particleCount; i++) {
-    positions[i * 3 + 2] += speed * (1.2 + highsEnergy * 3.6);
-
-    if (positions[i * 3 + 2] > 4.5) {
-      positions[i * 3 + 2] = -spiralLength;
-    }
+    renderSnapshot(ring);
   }
 
-  particles.geometry.attributes.position.needsUpdate = true;
+  bloomPass.strength = 0.1 + overallEnergy * 0.22;
 
-  particleMaterial.size = 0.012 + highSparkle;
-  particleMaterial.opacity = 0.26 + highsEnergy * 0.48;
-
-  pointLight.intensity = 5 + overallEnergy * 20;
-  pointLight.color.setHSL(0.6 + midsEnergy * 0.2, 0.9, 0.55);
-
-  rearLight.intensity = 4 + bassEnergy * 18;
-  rearLight.color.setHSL(0.48 + midsEnergy * 0.22, 0.88, 0.5);
-
-  bloomPass.strength = 0.18 + overallEnergy * 0.55;
-  bloomPass.radius = 0.22 + bassEnergy * 0.26;
-  bloomPass.threshold = 0.24 + highsEnergy * 0.08;
-
-  renderer.toneMappingExposure = 0.96 + overallEnergy * 0.32;
-
-  camera.position.x = Math.sin(elapsedTime * 0.55) * (0.08 + midsEnergy * 0.28);
-  camera.position.y = Math.cos(elapsedTime * 0.42) * (0.08 + midsEnergy * 0.28);
-
-  const cameraShake = bassEnergy * 0.035;
-  camera.position.x += Math.sin(elapsedTime * 34) * cameraShake;
-  camera.position.y += Math.cos(elapsedTime * 28) * cameraShake;
-
-  camera.lookAt(0, 0, -9);
+  camera.position.x = Math.sin(t * 0.3) * 0.06;
+  camera.position.y = Math.cos(t * 0.23) * 0.06;
+  camera.lookAt(0, 0, -10);
 
   composer.render();
   requestAnimationFrame(animate);
@@ -500,15 +558,13 @@ function animate() {
 animate();
 
 // ------------------------------------------------------
-// Resize handling
+// Resize
 // ------------------------------------------------------
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
-
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });

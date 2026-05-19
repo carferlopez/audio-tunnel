@@ -51,21 +51,49 @@ h1 {
 }
 
 .controls {
-  display: flex;
-  gap: 10px;
-  align-items: center;
+  display: grid;
+  gap: 12px;
   margin-top: 22px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(14px);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+}
+
+.control-label,
+.file-name,
+.time-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.control-label {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 input[type="file"] {
   width: 100%;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.7);
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  cursor: pointer;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #8ee7ff;
 }
 
 button {
@@ -84,12 +112,38 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.file-name {
+  min-height: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transport {
+  display: grid;
+  grid-template-columns: auto 38px minmax(0, 1fr) 38px;
+  gap: 10px;
+  align-items: center;
+}
+
+.time-label {
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.volume-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
 .meters {
   margin-top: 14px;
   display: grid;
   gap: 10px;
   padding: 12px;
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(14px);
 }
@@ -116,4 +170,20 @@ button:disabled {
   width: 0%;
   border-radius: inherit;
   background: white;
+}
+
+@media (max-width: 560px) {
+  .ui {
+    top: 20px;
+    left: 20px;
+    width: calc(100vw - 40px);
+  }
+
+  h1 {
+    font-size: 44px;
+  }
+
+  .transport {
+    grid-template-columns: auto 38px 1fr 38px;
+  }
 }
